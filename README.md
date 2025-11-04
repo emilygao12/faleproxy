@@ -88,3 +88,10 @@ To enable automatic deployments to Vercel, you need to:
 - Cheerio - HTML parsing and manipulation
 - Vanilla JavaScript for frontend functionality
 - Jest, Supertest, and Nock for testing
+
+---
+
+## Editing this file for HW8 implementation:
+
+- Compared this repo’s to the Ncoded Solutions article on automating deployments with Vercel / GitHub Actions.
+- Connected my fork to a free Vercel project.
