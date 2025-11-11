@@ -24,10 +24,8 @@ const sanitizeAxiosError = (err) => {
 beforeAll(() => {
   nock.cleanAll();
   nock.disableNetConnect();
-  // Allow both localhost and 127.0.0.1
-  nock.enableNetConnect((host) =>
-    /(^|:)localhost(:|$)/.test(host) || /(127\.0\.0\.1)/.test(host)
-  );
+  // allow only the local test server; block everything else so nock must intercept
+  nock.enableNetConnect(/^(localhost|127\.0\.0\.1)(:\d+)?$/);
 });
 
 // Clean up nock after all tests
