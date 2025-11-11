@@ -1,3 +1,4 @@
+const http = require('http');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { exec } = require('child_process');
@@ -7,86 +8,85 @@ const { sampleHtmlWithYale } = require('./test-utils');
 const nock = require('nock');
 const { spawn } = require('child_process');
 
-// --------- Helpers ---------
+// ---------- Network controls ----------
 
-// Make sure Jest doesn’t try to serialize circular Axios error objects
-const sanitizeAxiosError = (err) => {
-  if (err && err.isAxiosError) {
-    const status = err.response?.status;
-    const data = err.response?.data;
-    const message = err.message;
-    return { isAxiosError: true, status, data, message };
-  }
-  return { message: String((err && err.message) || err) };
-};
-
-// Allow localhost connections for the test server, but block external by default
+// Allow only localhost for the duration of these tests
 beforeAll(() => {
   nock.cleanAll();
   nock.disableNetConnect();
-  // allow only the local test server; block everything else so nock must intercept
   nock.enableNetConnect(/^(localhost|127\.0\.0\.1)(:\d+)?$/);
 });
 
-// Clean up nock after all tests
 afterAll(() => {
   try { nock.cleanAll(); } catch {}
   try { nock.enableNetConnect(); } catch {}
 });
 
-// --------- Test server setup ---------
+// ---------- Local stub server that serves the Yale HTML ----------
 
-// Use a different port to avoid collisions with local dev
-const TEST_PORT = 3099;
-let server;
+const STUB_PORT = 3101;
+let stubServer;
+
+const startStubServer = () =>
+  new Promise((resolve) => {
+    stubServer = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(sampleHtmlWithYale);
+    });
+    stubServer.listen(STUB_PORT, () => resolve());
+  });
+
+const stopStubServer = () =>
+  new Promise((resolve) => {
+    if (!stubServer) return resolve();
+    stubServer.close(() => resolve());
+  });
+
+// ---------- Child app process management ----------
+
+const TEST_PORT = 3099; // the app under test will listen here (we patch app.js)
+let serverProc;
 
 describe('Integration Tests', () => {
   beforeAll(async () => {
-    // Create a temporary test app and patch its port (GNU sed for Ubuntu runner)
+    // 1) Start the local stub server which serves Yale HTML
+    await startStubServer();
+
+    // 2) Copy app.js and patch its port (GNU sed for Ubuntu runner)
     await execAsync('cp app.js app.test.js');
     await execAsync(`sed -i 's/const PORT = 3001/const PORT = ${TEST_PORT}/' app.test.js`);
 
-    // Start the test server (no detached process group)
-    server = spawn(process.execPath, ['app.test.js'], {
-      stdio: 'ignore'
-    });
+    // 3) Launch the child app process
+    serverProc = spawn(process.execPath, ['app.test.js'], { stdio: 'ignore' });
 
-    // Give the server time to start
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-  }, 15000);
+    // 4) Give it a moment to bind the port
+    await new Promise((r) => setTimeout(r, 1500));
+  }, 20000);
 
   afterAll(async () => {
-    // Kill the test server and clean up
-    try {
-      if (server && server.pid) server.kill();
-    } catch {}
-    try {
-      await execAsync('rm app.test.js');
-    } catch {}
+    try { if (serverProc && serverProc.pid) serverProc.kill(); } catch {}
+    try { await execAsync('rm app.test.js'); } catch {}
+    await stopStubServer();
   });
 
   test('Should replace Yale with Fale in fetched content', async () => {
-    // Mock external HTTP request
-    nock('https://example.com').get('/').reply(200, sampleHtmlWithYale);
-
-    // Make a request to our proxy app
+    // Point the app to our local stub instead of example.com
     const response = await axios.post(`http://localhost:${TEST_PORT}/fetch`, {
-      url: 'https://example.com/'
+      url: `http://localhost:${STUB_PORT}/`
     });
 
     expect(response.status).toBe(200);
     expect(response.data.success).toBe(true);
 
-    // Verify replacements in text
     const $ = cheerio.load(response.data.content);
+    // Title/text should be rewritten
     expect($('title').text()).toBe('Fale University Test Page');
     expect($('h1').text()).toBe('Welcome to Fale University');
     expect($('p').first().text()).toContain('Fale University is a private');
 
-    // URLs remain unchanged (still contain yale.edu)
-    const links = $('a');
+    // Link URL should remain unchanged (still yale.edu)
     let hasYaleUrl = false;
-    links.each((i, link) => {
+    $('a').each((_, link) => {
       const href = $(link).attr('href');
       if (href && href.includes('yale.edu')) hasYaleUrl = true;
     });
@@ -99,25 +99,20 @@ describe('Integration Tests', () => {
   test('Should handle invalid URLs', async () => {
     try {
       await axios.post(`http://localhost:${TEST_PORT}/fetch`, { url: 'not-a-valid-url' });
-      // Should not reach here
       expect(true).toBe(false);
     } catch (error) {
-      const safe = sanitizeAxiosError(error);
-      expect(safe.status).toBe(500);
-      // Optional: expect(safe.message).toContain('Invalid URL'); // depends on your app.js
+      // Axios throws with an error having response/status
+      expect(error.response?.status).toBe(500);
     }
   });
 
   test('Should handle missing URL parameter', async () => {
     try {
       await axios.post(`http://localhost:${TEST_PORT}/fetch`, {});
-      // Should not reach here
       expect(true).toBe(false);
     } catch (error) {
-      const safe = sanitizeAxiosError(error);
-      expect(safe.status).toBe(400);
-      // Axios returns the server JSON in error.response.data
-      expect(safe.data?.error || '').toBe('URL is required');
+      expect(error.response?.status).toBe(400);
+      expect(error.response?.data?.error).toBe('URL is required');
     }
   });
 });
