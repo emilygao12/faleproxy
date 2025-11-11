@@ -65,9 +65,8 @@ describe('API Endpoints', () => {
   });
 
   afterAll(() => {
-    // Clean up nock
-    nock.cleanAll();
-    nock.enableNetConnect();
+    try { nock.cleanAll(); } catch {}
+    try { nock.enableNetConnect(); } catch {}
   });
 
   afterEach(() => {

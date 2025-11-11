@@ -5,58 +5,43 @@ const cheerio = require('cheerio');
 const path = require('path');
 
 const app = express();
-const PORT = 3001; // IMPORTANT: keep this literal; tests replace it with a test port
+const PORT = 3001; // keep this literal; integration test rewrites it with sed
 
-// ---------------------------
-// Middleware & static assets
-// ---------------------------
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---------------------------
-// Helpers
-// ---------------------------
+// --- helpers ---
 
-// Case-preserving Yale→Fale:
-//  - YALE  -> FALE
-//  - Yale  -> Fale
-//  - yale  -> fale
-function replaceYaleCasePreserving(str) {
-  return str.replace(/yale/gi, (m) => {
-    if (m === m.toUpperCase()) return 'FALE';         // YALE -> FALE
-    if (m[0] === m[0].toUpperCase()) return 'Fale';   // Yale -> Fale
-    return 'fale';                                     // yale -> fale
-  });
+// Strict, case-specific mapping so expectations match exactly:
+//   YALE -> FALE
+//   Yale -> Fale
+//   yale -> fale
+function replaceYaleCaseSpecific(str) {
+  // Order matters: uppercase first, then capitalized, then lowercase
+  return str
+    .replace(/YALE/g, 'FALE')
+    .replace(/Yale/g, 'Fale')
+    .replace(/yale/g, 'fale');
 }
 
-// Replace only in text nodes (avoid touching href/src URLs or other attributes)
 function replaceInTextNodes($) {
   $('body *')
     .contents()
-    .filter(function () {
-      return this.nodeType === 3; // text node
-    })
+    .filter(function () { return this.nodeType === 3; }) // text nodes
     .each(function () {
       const text = $(this).text();
-      const newText = replaceYaleCasePreserving(text);
+      const newText = replaceYaleCaseSpecific(text);
       if (text !== newText) $(this).replaceWith(newText);
     });
 }
 
-// ---------------------------
-// Routes
-// ---------------------------
+// --- routes ---
 
-// Serve the main page (if present)
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// POST /fetch
-// Body: { url: "https://example.com/" }
-// Response: { success: true, originalUrl, content, title? } (on success)
-//           { error: "Failed to fetch content: ..." } (on failure)
 app.post('/fetch', async (req, res) => {
   try {
     const { url } = req.body || {};
@@ -64,24 +49,20 @@ app.post('/fetch', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    // Fetch remote HTML as raw text (avoid JSON transforms)
     const response = await axios.get(url, {
       responseType: 'text',
       transformResponse: (r) => r,
       headers: { 'User-Agent': 'Mozilla/5.0 (Faleproxy)' },
-      validateStatus: () => true, // we still want the body even for non-2xx
+      validateStatus: () => true,
     });
 
     const html = typeof response.data === 'string' ? response.data : '';
     const $ = cheerio.load(html);
 
-    // Replace in visible text nodes
     replaceInTextNodes($);
 
-    // Replace in <title> explicitly
     if ($('title').length) {
-      const newTitle = replaceYaleCasePreserving($('title').text());
-      $('title').text(newTitle);
+      $('title').text(replaceYaleCaseSpecific($('title').text()));
     }
 
     return res.json({
@@ -97,9 +78,7 @@ app.post('/fetch', async (req, res) => {
   }
 });
 
-// ---------------------------
-// Start server (integration tests launch this file as a process)
-// ---------------------------
+// integration tests start this process and then POST to it
 app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`Faleproxy server running at http://localhost:${PORT}`);
